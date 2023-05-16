@@ -16,10 +16,9 @@
 package generator
 
 import (
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"log"
 	"strings"
-
-	"google.golang.org/protobuf/reflect/protoreflect"
 
 	wk "github.com/google/gnostic/cmd/protoc-gen-openapi/generator/wellknown"
 	v3 "github.com/google/gnostic/openapiv3"
@@ -56,7 +55,7 @@ func (r *OpenAPIv3Reflector) getMessageName(message protoreflect.MessageDescript
 	return prefix + string(message.Name())
 }
 
-func (r *OpenAPIv3Reflector) formatMessageName(message protoreflect.MessageDescriptor) string {
+func (r *OpenAPIv3Reflector) formatMessageName(message protoreflect.MessageDescriptor, isOutput bool) string {
 	typeName := r.fullMessageTypeName(message)
 
 	name := r.getMessageName(message)
@@ -81,6 +80,10 @@ func (r *OpenAPIv3Reflector) formatMessageName(message protoreflect.MessageDescr
 	if *r.conf.FQSchemaNaming {
 		package_name := string(message.ParentFile().Package())
 		name = package_name + "." + name
+	}
+
+	if isOutput {
+		name += "_OUT"
 	}
 
 	return name
@@ -111,11 +114,11 @@ func (r *OpenAPIv3Reflector) responseContentForMessage(message protoreflect.Mess
 		return "200", wk.NewGoogleApiHttpBodyMediaType()
 	}
 
-	return "200", wk.NewApplicationJsonMediaType(r.schemaOrReferenceForMessage(message))
+	return "200", wk.NewApplicationJsonMediaType(r.schemaOrReferenceForMessage(message, true))
 }
 
-func (r *OpenAPIv3Reflector) schemaReferenceForMessage(message protoreflect.MessageDescriptor) string {
-	schemaName := r.formatMessageName(message)
+func (r *OpenAPIv3Reflector) schemaReferenceForMessage(message protoreflect.MessageDescriptor, isOutput bool) string {
+	schemaName := r.formatMessageName(message, isOutput)
 	if !contains(r.requiredSchemas, schemaName) {
 		r.requiredSchemas = append(r.requiredSchemas, schemaName)
 	}
@@ -124,7 +127,7 @@ func (r *OpenAPIv3Reflector) schemaReferenceForMessage(message protoreflect.Mess
 
 // Returns a full schema for simple types, and a schema reference for complex types that reference
 // the definition in `#/components/schemas/`
-func (r *OpenAPIv3Reflector) schemaOrReferenceForMessage(message protoreflect.MessageDescriptor) *v3.SchemaOrReference {
+func (r *OpenAPIv3Reflector) schemaOrReferenceForMessage(message protoreflect.MessageDescriptor, isOutput bool) *v3.SchemaOrReference {
 	typeName := r.fullMessageTypeName(message)
 	switch typeName {
 
@@ -151,14 +154,14 @@ func (r *OpenAPIv3Reflector) schemaOrReferenceForMessage(message protoreflect.Me
 		return nil //&v3.SchemaOrReference{Oneof: &v3.SchemaOrReference_Schema{Schema: &v3.Schema{Type: "null"}}}
 
 	default:
-		ref := r.schemaReferenceForMessage(message)
+		ref := r.schemaReferenceForMessage(message, isOutput)
 		return &v3.SchemaOrReference{
 			Oneof: &v3.SchemaOrReference_Reference{
 				Reference: &v3.Reference{XRef: ref}}}
 	}
 }
 
-func (r *OpenAPIv3Reflector) schemaOrReferenceForField(field protoreflect.FieldDescriptor) *v3.SchemaOrReference {
+func (r *OpenAPIv3Reflector) schemaOrReferenceForField(field protoreflect.FieldDescriptor, isOutput bool) *v3.SchemaOrReference {
 	var kindSchema *v3.SchemaOrReference
 
 	kind := field.Kind()
@@ -180,9 +183,9 @@ func (r *OpenAPIv3Reflector) schemaOrReferenceForField(field protoreflect.FieldD
 			//
 			// So we need to find the `value` field in the `MapFieldEntry` message and
 			// then return a MapFieldEntry schema using the schema for the `value` field
-			return wk.NewGoogleProtobufMapFieldEntrySchema(r.schemaOrReferenceForField(field.MapValue()))
+			return wk.NewGoogleProtobufMapFieldEntrySchema(r.schemaOrReferenceForField(field.MapValue(), isOutput))
 		} else {
-			kindSchema = r.schemaOrReferenceForMessage(field.Message())
+			kindSchema = r.schemaOrReferenceForMessage(field.Message(), isOutput)
 		}
 
 	case protoreflect.StringKind:

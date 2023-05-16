@@ -285,6 +285,8 @@ func (g *OpenAPIv3Generator) buildQueryParamsV3(field *protogen.Field) []*v3.Par
 
 // depths are used to keep track of how many times a message's fields has been seen
 func (g *OpenAPIv3Generator) _buildQueryParamsV3(field *protogen.Field, depths map[string]int) []*v3.ParameterOrReference {
+	const isOutput = false // query params are input
+
 	parameters := []*v3.ParameterOrReference{}
 
 	queryFieldName := g.reflect.formatFieldName(field.Desc)
@@ -298,7 +300,7 @@ func (g *OpenAPIv3Generator) _buildQueryParamsV3(field *protogen.Field, depths m
 		typeName := g.reflect.fullMessageTypeName(field.Desc.Message())
 
 		if typeName == ".google.protobuf.Value" {
-			fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
+			fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc, isOutput)
 			parameters = append(parameters,
 				&v3.ParameterOrReference{
 					Oneof: &v3.ParameterOrReference_Parameter{
@@ -319,7 +321,7 @@ func (g *OpenAPIv3Generator) _buildQueryParamsV3(field *protogen.Field, depths m
 
 		// Represent field masks directly as strings (don't expand them).
 		if typeName == ".google.protobuf.FieldMask" {
-			fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
+			fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc, isOutput)
 			parameters = append(parameters,
 				&v3.ParameterOrReference{
 					Oneof: &v3.ParameterOrReference_Parameter{
@@ -358,7 +360,7 @@ func (g *OpenAPIv3Generator) _buildQueryParamsV3(field *protogen.Field, depths m
 
 	} else if field.Desc.Kind() != protoreflect.GroupKind {
 		// schemaOrReferenceForField also handles array types
-		fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
+		fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc, isOutput)
 
 		parameters = append(parameters,
 			&v3.ParameterOrReference{
@@ -411,7 +413,8 @@ func (g *OpenAPIv3Generator) buildOperationV3(
 			var fieldDescription string
 			field := g.findField(pathParameter, inputMessage)
 			if field != nil {
-				fieldSchema = g.reflect.schemaOrReferenceForField(field.Desc)
+				const isOutput = false // input message
+				fieldSchema = g.reflect.schemaOrReferenceForField(field.Desc, isOutput)
 				fieldDescription = g.filterCommentString(field.Comments.Leading, true)
 			} else {
 				// If field does not exist, it is safe to set it to string, as it is ignored downstream
@@ -516,11 +519,11 @@ func (g *OpenAPIv3Generator) buildOperationV3(
 
 	// Add the default reponse if needed
 	if *g.conf.DefaultResponse {
-		anySchemaName := g.reflect.formatMessageName(anyProtoDesc)
+		anySchemaName := g.reflect.formatMessageName(anyProtoDesc, true)
 		anySchema := wk.NewGoogleProtobufAnySchema(anySchemaName)
 		g.addSchemaToDocumentV3(d, anySchema)
 
-		statusSchemaName := g.reflect.formatMessageName(statusProtoDesc)
+		statusSchemaName := g.reflect.formatMessageName(statusProtoDesc, true)
 		statusSchema := wk.NewGoogleRpcStatusSchema(statusSchemaName, anySchemaName)
 		g.addSchemaToDocumentV3(d, statusSchema)
 
@@ -564,7 +567,8 @@ func (g *OpenAPIv3Generator) buildOperationV3(
 
 		if bodyField == "*" {
 			// Pass the entire request message as the request body.
-			requestSchema = g.reflect.schemaOrReferenceForMessage(inputMessage.Desc)
+			const isOutput = false
+			requestSchema = g.reflect.schemaOrReferenceForMessage(inputMessage.Desc, isOutput)
 
 		} else {
 			// If body refers to a message field, use that type.
@@ -581,7 +585,8 @@ func (g *OpenAPIv3Generator) buildOperationV3(
 						}
 
 					case protoreflect.MessageKind:
-						requestSchema = g.reflect.schemaOrReferenceForMessage(field.Message.Desc)
+						const isOutput = false
+						requestSchema = g.reflect.schemaOrReferenceForMessage(field.Message.Desc, isOutput)
 
 					default:
 						log.Printf("unsupported field type %+v", field.Desc)
@@ -725,12 +730,14 @@ func (g *OpenAPIv3Generator) addSchemasForMessagesToDocumentV3(d *v3.Document, m
 			g.addSchemasForMessagesToDocumentV3(d, message.Messages)
 		}
 
-		g.addSchemaForMessageToDocumentV3(d, message)
+		for _, isOutput := range []bool{false, true} {
+			g.addSchemaForMessageToDocumentV3(d, message, isOutput)
+		}
 	}
 }
 
-func (g *OpenAPIv3Generator) addSchemaForMessageToDocumentV3(d *v3.Document, message *protogen.Message) {
-	schemaName := g.reflect.formatMessageName(message.Desc)
+func (g *OpenAPIv3Generator) addSchemaForMessageToDocumentV3(d *v3.Document, message *protogen.Message, isOutput bool) {
+	schemaName := g.reflect.formatMessageName(message.Desc, isOutput)
 
 	// Only generate this if we need it and haven't already generated it.
 	if !contains(g.reflect.requiredSchemas, schemaName) ||
@@ -750,7 +757,7 @@ func (g *OpenAPIv3Generator) addSchemaForMessageToDocumentV3(d *v3.Document, mes
 		g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufAnySchema(schemaName))
 		return
 	} else if typeName == ".google.rpc.Status" {
-		anySchemaName := g.reflect.formatMessageName(anyProtoDesc)
+		anySchemaName := g.reflect.formatMessageName(anyProtoDesc, isOutput)
 		g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufAnySchema(anySchemaName))
 		g.addSchemaToDocumentV3(d, wk.NewGoogleRpcStatusSchema(schemaName, anySchemaName))
 		return
@@ -768,6 +775,7 @@ func (g *OpenAPIv3Generator) addSchemaForMessageToDocumentV3(d *v3.Document, mes
 		// Check the field annotations to see if this is a readonly or writeonly field.
 		inputOnly := false
 		outputOnly := false
+		isRequired := false
 		extension := proto.GetExtension(field.Desc.Options(), annotations.E_FieldBehavior)
 		if extension != nil {
 			switch v := extension.(type) {
@@ -779,7 +787,7 @@ func (g *OpenAPIv3Generator) addSchemaForMessageToDocumentV3(d *v3.Document, mes
 					case annotations.FieldBehavior_INPUT_ONLY:
 						inputOnly = true
 					case annotations.FieldBehavior_REQUIRED:
-						required = append(required, g.reflect.formatFieldName(field.Desc))
+						isRequired = true
 					}
 				}
 			default:
@@ -787,8 +795,16 @@ func (g *OpenAPIv3Generator) addSchemaForMessageToDocumentV3(d *v3.Document, mes
 			}
 		}
 
+		// A field marked as required is only required in the schema if:
+		// - it is neither marked input-only nor output-only,
+		// - it is marked input-only, not marked output-only, and we're generating the input type, or
+		// - it is marked output-only, not marked input-only, and we're generating the output type.
+		if isRequired && (isOutput && (outputOnly || !inputOnly) || !isOutput && (inputOnly || !outputOnly)) {
+			required = append(required, g.reflect.formatFieldName(field.Desc))
+		}
+
 		// The field is either described by a reference or a schema.
-		fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
+		fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc, isOutput)
 		if fieldSchema == nil {
 			continue
 		}
