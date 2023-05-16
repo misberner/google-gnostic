@@ -725,121 +725,125 @@ func (g *OpenAPIv3Generator) addSchemasForMessagesToDocumentV3(d *v3.Document, m
 			g.addSchemasForMessagesToDocumentV3(d, message.Messages)
 		}
 
-		schemaName := g.reflect.formatMessageName(message.Desc)
-
-		// Only generate this if we need it and haven't already generated it.
-		if !contains(g.reflect.requiredSchemas, schemaName) ||
-			contains(g.generatedSchemas, schemaName) {
-			continue
-		}
-
-		typeName := g.reflect.fullMessageTypeName(message.Desc)
-		messageDescription := g.filterCommentString(message.Comments.Leading, true)
-
-		// `google.protobuf.Value` and `google.protobuf.Any` have special JSON transcoding
-		// so we can't just reflect on the message descriptor.
-		if typeName == ".google.protobuf.Value" {
-			g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufValueSchema(schemaName))
-			continue
-		} else if typeName == ".google.protobuf.Any" {
-			g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufAnySchema(schemaName))
-			continue
-		} else if typeName == ".google.rpc.Status" {
-			anySchemaName := g.reflect.formatMessageName(anyProtoDesc)
-			g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufAnySchema(anySchemaName))
-			g.addSchemaToDocumentV3(d, wk.NewGoogleRpcStatusSchema(schemaName, anySchemaName))
-			continue
-		}
-
-		// Build an array holding the fields of the message.
-		definitionProperties := &v3.Properties{
-			AdditionalProperties: make([]*v3.NamedSchemaOrReference, 0),
-		}
-
-		var required []string
-		for _, field := range message.Fields {
-			// Get the field description from the comments.
-			description := g.filterCommentString(field.Comments.Leading, true)
-			// Check the field annotations to see if this is a readonly or writeonly field.
-			inputOnly := false
-			outputOnly := false
-			extension := proto.GetExtension(field.Desc.Options(), annotations.E_FieldBehavior)
-			if extension != nil {
-				switch v := extension.(type) {
-				case []annotations.FieldBehavior:
-					for _, vv := range v {
-						switch vv {
-						case annotations.FieldBehavior_OUTPUT_ONLY:
-							outputOnly = true
-						case annotations.FieldBehavior_INPUT_ONLY:
-							inputOnly = true
-						case annotations.FieldBehavior_REQUIRED:
-							required = append(required, g.reflect.formatFieldName(field.Desc))
-						}
-					}
-				default:
-					log.Printf("unsupported extension type %T", extension)
-				}
-			}
-
-			// The field is either described by a reference or a schema.
-			fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
-			if fieldSchema == nil {
-				continue
-			}
-
-			// If this field has siblings and is a $ref now, create a new schema use `allOf` to wrap it
-			wrapperNeeded := inputOnly || outputOnly || description != ""
-			if wrapperNeeded {
-				if _, ok := fieldSchema.Oneof.(*v3.SchemaOrReference_Reference); ok {
-					fieldSchema = &v3.SchemaOrReference{Oneof: &v3.SchemaOrReference_Schema{Schema: &v3.Schema{
-						AllOf: []*v3.SchemaOrReference{fieldSchema},
-					}}}
-				}
-			}
-
-			if schema, ok := fieldSchema.Oneof.(*v3.SchemaOrReference_Schema); ok {
-				schema.Schema.Description = description
-				schema.Schema.ReadOnly = outputOnly
-				schema.Schema.WriteOnly = inputOnly
-
-				// Merge any `Property` annotations with the current
-				extProperty := proto.GetExtension(field.Desc.Options(), v3.E_Property)
-				if extProperty != nil {
-					proto.Merge(schema.Schema, extProperty.(*v3.Schema))
-				}
-			}
-
-			definitionProperties.AdditionalProperties = append(
-				definitionProperties.AdditionalProperties,
-				&v3.NamedSchemaOrReference{
-					Name:  g.reflect.formatFieldName(field.Desc),
-					Value: fieldSchema,
-				},
-			)
-		}
-
-		schema := &v3.Schema{
-			Type:        "object",
-			Description: messageDescription,
-			Properties:  definitionProperties,
-			Required:    required,
-		}
-
-		// Merge any `Schema` annotations with the current
-		extSchema := proto.GetExtension(message.Desc.Options(), v3.E_Schema)
-		if extSchema != nil {
-			proto.Merge(schema, extSchema.(*v3.Schema))
-		}
-
-		// Add the schema to the components.schema list.
-		g.addSchemaToDocumentV3(d, &v3.NamedSchemaOrReference{
-			Name: schemaName,
-			Value: &v3.SchemaOrReference{
-				Oneof: &v3.SchemaOrReference_Schema{
-					Schema: schema,
-				},
-			},
-		})
+		g.addSchemaForMessageToDocumentV3(d, message)
 	}
+}
+
+func (g *OpenAPIv3Generator) addSchemaForMessageToDocumentV3(d *v3.Document, message *protogen.Message) {
+	schemaName := g.reflect.formatMessageName(message.Desc)
+
+	// Only generate this if we need it and haven't already generated it.
+	if !contains(g.reflect.requiredSchemas, schemaName) ||
+		contains(g.generatedSchemas, schemaName) {
+		return
+	}
+
+	typeName := g.reflect.fullMessageTypeName(message.Desc)
+	messageDescription := g.filterCommentString(message.Comments.Leading, true)
+
+	// `google.protobuf.Value` and `google.protobuf.Any` have special JSON transcoding
+	// so we can't just reflect on the message descriptor.
+	if typeName == ".google.protobuf.Value" {
+		g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufValueSchema(schemaName))
+		return
+	} else if typeName == ".google.protobuf.Any" {
+		g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufAnySchema(schemaName))
+		return
+	} else if typeName == ".google.rpc.Status" {
+		anySchemaName := g.reflect.formatMessageName(anyProtoDesc)
+		g.addSchemaToDocumentV3(d, wk.NewGoogleProtobufAnySchema(anySchemaName))
+		g.addSchemaToDocumentV3(d, wk.NewGoogleRpcStatusSchema(schemaName, anySchemaName))
+		return
+	}
+
+	// Build an array holding the fields of the message.
+	definitionProperties := &v3.Properties{
+		AdditionalProperties: make([]*v3.NamedSchemaOrReference, 0),
+	}
+
+	var required []string
+	for _, field := range message.Fields {
+		// Get the field description from the comments.
+		description := g.filterCommentString(field.Comments.Leading, true)
+		// Check the field annotations to see if this is a readonly or writeonly field.
+		inputOnly := false
+		outputOnly := false
+		extension := proto.GetExtension(field.Desc.Options(), annotations.E_FieldBehavior)
+		if extension != nil {
+			switch v := extension.(type) {
+			case []annotations.FieldBehavior:
+				for _, vv := range v {
+					switch vv {
+					case annotations.FieldBehavior_OUTPUT_ONLY:
+						outputOnly = true
+					case annotations.FieldBehavior_INPUT_ONLY:
+						inputOnly = true
+					case annotations.FieldBehavior_REQUIRED:
+						required = append(required, g.reflect.formatFieldName(field.Desc))
+					}
+				}
+			default:
+				log.Printf("unsupported extension type %T", extension)
+			}
+		}
+
+		// The field is either described by a reference or a schema.
+		fieldSchema := g.reflect.schemaOrReferenceForField(field.Desc)
+		if fieldSchema == nil {
+			continue
+		}
+
+		// If this field has siblings and is a $ref now, create a new schema use `allOf` to wrap it
+		wrapperNeeded := inputOnly || outputOnly || description != ""
+		if wrapperNeeded {
+			if _, ok := fieldSchema.Oneof.(*v3.SchemaOrReference_Reference); ok {
+				fieldSchema = &v3.SchemaOrReference{Oneof: &v3.SchemaOrReference_Schema{Schema: &v3.Schema{
+					AllOf: []*v3.SchemaOrReference{fieldSchema},
+				}}}
+			}
+		}
+
+		if schema, ok := fieldSchema.Oneof.(*v3.SchemaOrReference_Schema); ok {
+			schema.Schema.Description = description
+			schema.Schema.ReadOnly = outputOnly
+			schema.Schema.WriteOnly = inputOnly
+
+			// Merge any `Property` annotations with the current
+			extProperty := proto.GetExtension(field.Desc.Options(), v3.E_Property)
+			if extProperty != nil {
+				proto.Merge(schema.Schema, extProperty.(*v3.Schema))
+			}
+		}
+
+		definitionProperties.AdditionalProperties = append(
+			definitionProperties.AdditionalProperties,
+			&v3.NamedSchemaOrReference{
+				Name:  g.reflect.formatFieldName(field.Desc),
+				Value: fieldSchema,
+			},
+		)
+	}
+
+	schema := &v3.Schema{
+		Type:        "object",
+		Description: messageDescription,
+		Properties:  definitionProperties,
+		Required:    required,
+	}
+
+	// Merge any `Schema` annotations with the current
+	extSchema := proto.GetExtension(message.Desc.Options(), v3.E_Schema)
+	if extSchema != nil {
+		proto.Merge(schema, extSchema.(*v3.Schema))
+	}
+
+	// Add the schema to the components.schema list.
+	g.addSchemaToDocumentV3(d, &v3.NamedSchemaOrReference{
+		Name: schemaName,
+		Value: &v3.SchemaOrReference{
+			Oneof: &v3.SchemaOrReference_Schema{
+				Schema: schema,
+			},
+		},
+	})
 }
